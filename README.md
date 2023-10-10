@@ -1,6 +1,6 @@
 # hydro-challenge-zed
 
-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
+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
 
 ## From https://github.com/stereolabs/zed-open-capture.git
 
