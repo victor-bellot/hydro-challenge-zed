@@ -259,6 +259,30 @@ if(BUILD_EXAMPLES)
                 RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
             )
         endif()
+
+        ##### Recorder Example
+        find_package(OpenMP)
+
+        set(RECORDER_EXAMPLE ${PROJECT_NAME}_recorder_example)
+        include_directories( ${PROJECT_SOURCE_DIR}/examples/include)
+        add_executable(${RECORDER_EXAMPLE} "${PROJECT_SOURCE_DIR}/custom/video_recorder.cpp")
+        set_target_properties(${RECORDER_EXAMPLE} PROPERTIES PREFIX "")
+
+        if(OpenMP_CXX_FOUND)
+            include_directories(${OpenMP_CXX_INCLUDE_DIRS})
+            SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+            target_link_libraries(${RECORDER_EXAMPLE}
+              OpenMP::OpenMP_CXX
+              ${PROJECT_NAME}
+              ${OpenCV_LIBS}
+            )
+        else()
+            target_link_libraries(${RECORDER_EXAMPLE}
+              ${PROJECT_NAME}
+              ${OpenCV_LIBS}
+            )
+        endif()
+
     endif()
 
     if(BUILD_SENSORS)
