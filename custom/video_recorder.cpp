@@ -17,7 +17,7 @@
 // <---- Includes
 
 #define USE_OCV_TAPI // Comment to use "normal" cv::Mat instead of CV::UMat
-#define USE_HALF_SIZE_DISP // Comment to compute depth matching on full image frames
+#define SCALE_FACTOR 0.25  // Define the scale factor for disparity image writer
 
 int main(int argc, char *argv[])
 {
@@ -27,6 +27,10 @@ int main(int argc, char *argv[])
     // <---- Silence unused warning
 
     sl_oc::VERBOSITY verbose = sl_oc::VERBOSITY::INFO;
+
+    int frame_count = 100;
+    if (argc > 1)
+        frame_count = std::stoi(argv[1]);
 
     // ----> Set Video parameters
     sl_oc::video::VideoParams params;
@@ -159,7 +163,7 @@ int main(int argc, char *argv[])
     // <---- Video Writer definition
 
     // Infinite video grabbing loop
-    for (int k=0; k<100; k++)
+    for (int k=0; k<frame_count; k++)
     {
         // Get a new frame from camera
         const sl_oc::video::Frame frame = cap.getLastFrame();
@@ -200,29 +204,21 @@ int main(int argc, char *argv[])
 
             // ----> Stereo matching
             sl_oc::tools::StopWatch stereo_clock;
-            double resize_fact = 1.0;
-#ifdef USE_HALF_SIZE_DISP
-            resize_fact = 0.5;
+
             // Resize the original images to improve performances
-            cv::resize(left_rect,  left_for_matcher,  cv::Size(), resize_fact, resize_fact, cv::INTER_AREA);
-            cv::resize(right_rect, right_for_matcher, cv::Size(), resize_fact, resize_fact, cv::INTER_AREA);
-#else
-            left_for_matcher = left_rect; // No data copy
-            right_for_matcher = right_rect; // No data copy
-#endif
+            cv::resize(left_rect,  left_for_matcher,  cv::Size(), SCALE_FACTOR, SCALE_FACTOR, cv::INTER_AREA);
+            cv::resize(right_rect, right_for_matcher, cv::Size(), SCALE_FACTOR, SCALE_FACTOR, cv::INTER_AREA);
+
             // Apply stereo matching
-            left_matcher->compute(left_for_matcher, right_for_matcher,left_disp_half);
+            left_matcher->compute(left_for_matcher, right_for_matcher, left_disp_half);
 
             left_disp_half.convertTo(left_disp_float,CV_32FC1);
-            cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
 
-#ifdef USE_HALF_SIZE_DISP
-            cv::multiply(left_disp_float,2.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+            cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+            //cv::multiply(left_disp_float,2.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+
             cv::UMat tmp = left_disp_float; // Required for OpenCV 3.2
-            cv::resize(tmp, left_disp_float, cv::Size(), 1./resize_fact, 1./resize_fact, cv::INTER_AREA);
-#else
-            left_disp = left_disp_float;
-#endif
+            cv::resize(tmp, left_disp_float, cv::Size(), 1./SCALE_FACTOR, 1./SCALE_FACTOR, cv::INTER_AREA);
 
             double elapsed = stereo_clock.toc();
             std::stringstream stereoElabInfo;
@@ -236,7 +232,7 @@ int main(int argc, char *argv[])
             // From gray to colorfull
             //cv::applyColorMap(left_disp_image,left_disp_image,cv::COLORMAP_JET); // COLORMAP_INFERNO is better, but it's only available starting from OpenCV v4.1.0
 
-            videoWriter.write(left_disp_image);  // MAYBE A PROBLEM HERE!
+            videoWriter.write(left_disp_image);
             // <---- Write disparity image
 
             // ----> Extract Depth map
