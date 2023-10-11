@@ -3,6 +3,9 @@
 #include <sstream>
 #include <string>
 
+#include <chrono>
+#include <thread>
+
 // StereoLabs includes
 #include "videocapture.hpp"
 
@@ -28,9 +31,13 @@ int main(int argc, char *argv[])
 
     sl_oc::VERBOSITY verbose = sl_oc::VERBOSITY::INFO;
 
-    int frame_count = 100;
+    int duration = 10;  // recording duration in seconds
     if (argc > 1)
-        frame_count = std::stoi(argv[1]);
+        duration = std::stoi(argv[1]);
+    
+    std::string recording_name = "recording";
+    if (argc > 2)
+        recording_name = argv[2];
 
     // ----> Set Video parameters
     sl_oc::video::VideoParams params;
@@ -39,8 +46,12 @@ int main(int argc, char *argv[])
 #else
     params.res = sl_oc::video::RESOLUTION::HD720;
 #endif
-    params.fps = sl_oc::video::FPS::FPS_30;
     params.verbose = verbose;
+    params.fps = sl_oc::video::FPS::FPS_15;
+    const int frequency = 15; // 15 Hz
+    const std::chrono::milliseconds dt(1000 / frequency);
+    const int loop_count = duration * frequency;
+
     // <---- Set Video parameters
 
     // ----> Create Video Capture
@@ -149,7 +160,7 @@ int main(int argc, char *argv[])
 
     // ----> Video Writer definition
     // Define the output video file name and codec
-    std::string outputFilename = "output_video.avi";
+    std::string outputFilename = recording_name + ".avi";
     int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');  // Codec for gray AVI format
 
     // Create a VideoWriter object to write the video to a file
@@ -163,8 +174,10 @@ int main(int argc, char *argv[])
     // <---- Video Writer definition
 
     // Infinite video grabbing loop
-    for (int k=0; k<frame_count; k++)
+    for (int k=0; k<loop_count; k++)
     {
+        auto startTime = std::chrono::high_resolution_clock::now();
+
         // Get a new frame from camera
         const sl_oc::video::Frame frame = cap.getLastFrame();
 
@@ -214,7 +227,7 @@ int main(int argc, char *argv[])
 
             left_disp_half.convertTo(left_disp_float,CV_32FC1);
 
-            cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+            //cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
             //cv::multiply(left_disp_float,2.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
 
             cv::UMat tmp = left_disp_float; // Required for OpenCV 3.2
@@ -240,43 +253,52 @@ int main(int argc, char *argv[])
             // depth = (f * B) / disparity
             // where 'f' is the camera focal, 'B' is the camera baseline, 'disparity' is the pixel disparity
 
-            double num = static_cast<double>(fx*baseline);
-            cv::divide(num,left_disp_float,left_depth_map);
+            //double num = static_cast<double>(fx*baseline);
+            //cv::divide(num,left_disp_float,left_depth_map);
 
             // float central_depth = left_depth_map.getMat(cv::ACCESS_READ).at<float>(left_depth_map.rows/2, left_depth_map.cols/2 );
             // std::cout << "Depth of the central pixel: " << central_depth << " mm" << std::endl;
             // <---- Extract Depth map
 
             // ----> Create Point Cloud
-            sl_oc::tools::StopWatch pc_clock;
-            size_t buf_size = static_cast<size_t>(left_depth_map.cols * left_depth_map.rows);
-            std::vector<cv::Vec3d> buffer( buf_size, cv::Vec3f::all( std::numeric_limits<float>::quiet_NaN() ) );
-            cv::Mat depth_map_cpu = left_depth_map.getMat(cv::ACCESS_READ);
-            float* depth_vec = (float*)(&(depth_map_cpu.data[0]));
+            //sl_oc::tools::StopWatch pc_clock;
+            //size_t buf_size = static_cast<size_t>(left_depth_map.cols * left_depth_map.rows);
+            //std::vector<cv::Vec3d> buffer( buf_size, cv::Vec3f::all( std::numeric_limits<float>::quiet_NaN() ) );
+            //cv::Mat depth_map_cpu = left_depth_map.getMat(cv::ACCESS_READ);
+            //float* depth_vec = (float*)(&(depth_map_cpu.data[0]));
 
-#pragma omp parallel for
-            for(size_t idx=0; idx<buf_size;idx++ )
-            {
-                size_t r = idx/left_depth_map.cols;
-                size_t c = idx%left_depth_map.cols;
-                double depth = static_cast<double>(depth_vec[idx]);
+//#pragma omp parallel for
+            //for(size_t idx=0; idx<buf_size;idx++ )
+            //{
+                //size_t r = idx/left_depth_map.cols;
+                //size_t c = idx%left_depth_map.cols;
+                //double depth = static_cast<double>(depth_vec[idx]);
                 //std::cout << depth << " ";
-                if(!isinf(depth) && depth >=0 && depth > stereoPar.minDepth_mm && depth < stereoPar.maxDepth_mm)
-                {
-                    buffer[idx].val[2] = depth; // Z
-                    buffer[idx].val[0] = (c-cx)*depth/fx; // X
-                    buffer[idx].val[1] = (r-cy)*depth/fy; // Y
-                }
-            }
+                //if(!isinf(depth) && depth >=0 && depth > stereoPar.minDepth_mm && depth < stereoPar.maxDepth_mm)
+                //{
+                    //buffer[idx].val[2] = depth; // Z
+                    //buffer[idx].val[0] = (c-cx)*depth/fx; // X
+                    //buffer[idx].val[1] = (r-cy)*depth/fy; // Y
+                //}
+            //}
 
-            cloudMat = cv::Mat( left_depth_map.rows, left_depth_map.cols, CV_64FC3, &buffer[0] ).clone();
+            //cloudMat = cv::Mat( left_depth_map.rows, left_depth_map.cols, CV_64FC3, &buffer[0] ).clone();
 
-            double pc_elapsed = stereo_clock.toc();
-            std::stringstream pcElabInfo;
-            pcElabInfo << "Point cloud processing: " << pc_elapsed << " sec - Freq: " << 1./pc_elapsed;
-            std::cout << pcElabInfo.str() << std::endl;
+            //double pc_elapsed = stereo_clock.toc();
+            //std::stringstream pcElabInfo;
+            //pcElabInfo << "Point cloud processing: " << pc_elapsed << " sec - Freq: " << 1./pc_elapsed;
+            //std::cout << pcElabInfo.str() << std::endl;
             // <---- Create Point Cloud
         }
+
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+
+        if (elapsedTime < dt) {
+            std::this_thread::sleep_for(dt - elapsedTime);
+        } else
+            std::cout << "Out of time..." << std::endl;
+
     }
 
     // Release VideoWriter object
