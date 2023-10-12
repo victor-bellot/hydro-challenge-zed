@@ -19,8 +19,9 @@
 #include "ocv_display.hpp"
 // <---- Includes
 
+#define EMBEDDED_ARM  // Low resolution
 #define USE_OCV_TAPI // Comment to use "normal" cv::Mat instead of CV::UMat
-#define SCALE_FACTOR 0.25  // Define the scale factor for disparity image writer
+#define DOWNSCALE_FACTOR 2
 
 int main(int argc, char *argv[])
 {
@@ -48,6 +49,7 @@ int main(int argc, char *argv[])
 #endif
     params.verbose = verbose;
     params.fps = sl_oc::video::FPS::FPS_15;
+
     const int frequency = 15; // 15 Hz
     const std::chrono::milliseconds dt(1000 / frequency);
     const int loop_count = duration * frequency;
@@ -82,6 +84,12 @@ int main(int argc, char *argv[])
     // ----> Frame size
     int w,h;
     cap.getFrameSize(w,h);
+
+    int w_out = w / 2 / DOWNSCALE_FACTOR;
+    int h_out = h / DOWNSCALE_FACTOR;
+
+    std::cout << "Frame size: " << w_out << ' ' << h_out << std::endl;
+
     // <---- Frame size
 
     // ----> Initialize calibration
@@ -121,10 +129,13 @@ int main(int argc, char *argv[])
     cv::UMat left_disp_half(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Half sized disparity map
     cv::UMat left_disp(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Full output disparity
     cv::UMat left_disp_float(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Final disparity map in float32
-    cv::UMat left_disp_image(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Normalized and color remapped disparity map to be saved
     cv::UMat left_depth_map(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Depth map in float32
+    cv::UMat left_depth_image(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Normalized and color remapped depth map to be saved
+    cv::UMat left_grey(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Grey version of the left raw image
+    cv::UMat right_grey(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Grey version of the right raw image
+    cv::UMat waouh(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Current frame (left raw camera + depth map)
 #else
-    cv::Mat frameBGR, left_raw, left_rect, right_raw, right_rect, frameYUV, left_for_matcher, right_for_matcher, left_disp_half,left_disp,left_disp_float, left_disp_vis;
+    cv::Mat frameBGR, left_raw, left_rect, right_raw, right_rect, frameYUV, left_for_matcher, right_for_matcher, left_disp_half,left_disp,left_disp_float, left_depth_image, current_frame;
 #endif
     // <---- Declare OpenCV images
 
@@ -153,9 +164,6 @@ int main(int argc, char *argv[])
     stereoPar.print();
     // <---- Stereo matcher initialization
 
-    // ----> Point Cloud
-    cv::Mat cloudMat;
-
     uint64_t last_ts=0; // Used to check new frame arrival
 
     // ----> Video Writer definition
@@ -164,7 +172,7 @@ int main(int argc, char *argv[])
     int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');  // Codec for gray AVI format
 
     // Create a VideoWriter object to write the video to a file
-    cv::VideoWriter videoWriter(outputFilename, fourcc, (double) params.fps, cv::Size(w/2, h), false);
+    cv::VideoWriter videoWriter(outputFilename, fourcc, (double) params.fps, cv::Size(w_out*3, h_out), false);
 
     // Check if the VideoWriter was successfully opened
     if (!videoWriter.isOpened()) {
@@ -219,76 +227,41 @@ int main(int argc, char *argv[])
             sl_oc::tools::StopWatch stereo_clock;
 
             // Resize the original images to improve performances
-            cv::resize(left_rect,  left_for_matcher,  cv::Size(), SCALE_FACTOR, SCALE_FACTOR, cv::INTER_AREA);
-            cv::resize(right_rect, right_for_matcher, cv::Size(), SCALE_FACTOR, SCALE_FACTOR, cv::INTER_AREA);
+            cv::resize(left_rect,  left_for_matcher,  cv::Size(w_out, h_out), 1./DOWNSCALE_FACTOR, 1./DOWNSCALE_FACTOR, cv::INTER_AREA);
+            cv::resize(right_rect, right_for_matcher, cv::Size(w_out, h_out), 1./DOWNSCALE_FACTOR, 1./DOWNSCALE_FACTOR, cv::INTER_AREA);
 
             // Apply stereo matching
             left_matcher->compute(left_for_matcher, right_for_matcher, left_disp_half);
-
             left_disp_half.convertTo(left_disp_float,CV_32FC1);
 
-            //cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
-            //cv::multiply(left_disp_float,2.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
-
-            cv::UMat tmp = left_disp_float; // Required for OpenCV 3.2
-            cv::resize(tmp, left_disp_float, cv::Size(), 1./SCALE_FACTOR, 1./SCALE_FACTOR, cv::INTER_AREA);
-
+            cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+            
             double elapsed = stereo_clock.toc();
             std::stringstream stereoElabInfo;
             stereoElabInfo << "Stereo processing: " << elapsed << " sec - Freq: " << 1./elapsed;
             // <---- Stereo matching
-
-            // ----> Write disparity image
-            cv::add(left_disp_float,-static_cast<double>(stereoPar.minDisparity-1),left_disp_float); // Minimum disparity offset correction
-            cv::multiply(left_disp_float,1./stereoPar.numDisparities,left_disp_image,255., CV_8UC1 ); // Normalization and rescaling
-
-            // From gray to colorfull
-            //cv::applyColorMap(left_disp_image,left_disp_image,cv::COLORMAP_JET); // COLORMAP_INFERNO is better, but it's only available starting from OpenCV v4.1.0
-
-            videoWriter.write(left_disp_image);
-            // <---- Write disparity image
 
             // ----> Extract Depth map
             // The DISPARITY MAP can be now transformed in DEPTH MAP using the formula
             // depth = (f * B) / disparity
             // where 'f' is the camera focal, 'B' is the camera baseline, 'disparity' is the pixel disparity
 
-            //double num = static_cast<double>(fx*baseline);
-            //cv::divide(num,left_disp_float,left_depth_map);
+            double num = static_cast<double>(fx*baseline);
+            cv::divide(num,left_disp_float,left_depth_map);
+            cv:min(left_depth_map,static_cast<double>(stereoPar.maxDepth_mm),left_depth_map);
 
-            // float central_depth = left_depth_map.getMat(cv::ACCESS_READ).at<float>(left_depth_map.rows/2, left_depth_map.cols/2 );
-            // std::cout << "Depth of the central pixel: " << central_depth << " mm" << std::endl;
+            cv::add(left_depth_map,-static_cast<double>(stereoPar.minDepth_mm),left_depth_map); // Minimum depth offset correction
+            cv::multiply(left_depth_map,1./(stereoPar.maxDepth_mm-stereoPar.minDepth_mm),left_depth_image,255., CV_8UC1 ); // Normalization and rescaling
+
+            cv::cvtColor(left_for_matcher, left_grey, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(right_for_matcher, right_grey, cv::COLOR_BGR2GRAY);
+
+            cv::hconcat(left_grey, left_depth_image, waouh);
+            cv::hconcat(waouh, right_grey, left_depth_image);
+
+            videoWriter.write(left_depth_image);
+
             // <---- Extract Depth map
-
-            // ----> Create Point Cloud
-            //sl_oc::tools::StopWatch pc_clock;
-            //size_t buf_size = static_cast<size_t>(left_depth_map.cols * left_depth_map.rows);
-            //std::vector<cv::Vec3d> buffer( buf_size, cv::Vec3f::all( std::numeric_limits<float>::quiet_NaN() ) );
-            //cv::Mat depth_map_cpu = left_depth_map.getMat(cv::ACCESS_READ);
-            //float* depth_vec = (float*)(&(depth_map_cpu.data[0]));
-
-//#pragma omp parallel for
-            //for(size_t idx=0; idx<buf_size;idx++ )
-            //{
-                //size_t r = idx/left_depth_map.cols;
-                //size_t c = idx%left_depth_map.cols;
-                //double depth = static_cast<double>(depth_vec[idx]);
-                //std::cout << depth << " ";
-                //if(!isinf(depth) && depth >=0 && depth > stereoPar.minDepth_mm && depth < stereoPar.maxDepth_mm)
-                //{
-                    //buffer[idx].val[2] = depth; // Z
-                    //buffer[idx].val[0] = (c-cx)*depth/fx; // X
-                    //buffer[idx].val[1] = (r-cy)*depth/fy; // Y
-                //}
-            //}
-
-            //cloudMat = cv::Mat( left_depth_map.rows, left_depth_map.cols, CV_64FC3, &buffer[0] ).clone();
-
-            //double pc_elapsed = stereo_clock.toc();
-            //std::stringstream pcElabInfo;
-            //pcElabInfo << "Point cloud processing: " << pc_elapsed << " sec - Freq: " << 1./pc_elapsed;
-            //std::cout << pcElabInfo.str() << std::endl;
-            // <---- Create Point Cloud
         }
 
         auto endTime = std::chrono::high_resolution_clock::now();

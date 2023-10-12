@@ -4,6 +4,11 @@ github_pat_11AM6RM4Y06A4dtZe9Kcwu_rvkuxSsuFC2Jm9jZgvywCobOscHP7EKjWikOkH5LFOTPA7
 
 ## From https://github.com/stereolabs/zed-open-capture.git
 
+## TODO
+
+- Fix croping effect -> tune disparity computation parameters
+- Object detection and tracking implementation
+
 ### Add udev rule
 Stereo cameras such as ZED 2 and ZED Mini have built-in sensors (e.g. IMU) that are identified as USB HID devices.
 To be able to access the USB HID device, you must add a udev rule contained in the `udev` folder:
