@@ -53,12 +53,11 @@ int main(int argc, char *argv[])
     const int frequency = 15; // 15 Hz
     const std::chrono::milliseconds dt(1000 / frequency);
     const int loop_count = duration * frequency;
-
     // <---- Set Video parameters
 
     // ----> Create Video Capture
     sl_oc::video::VideoCapture cap(params);
-    if( !cap.initializeVideo(-1) )
+    if( !cap.initializeVideo(-1))
     {
         std::cerr << "Cannot open camera video capture" << std::endl;
         std::cerr << "See verbosity level for more details." << std::endl;
@@ -74,12 +73,13 @@ int main(int argc, char *argv[])
     // ZED Calibration
     unsigned int serial_number = sn;
     // Download camera calibration file
-    if( !sl_oc::tools::downloadCalibrationFile(serial_number, calibration_file) )
+    if( !sl_oc::tools::downloadCalibrationFile(serial_number, calibration_file))
     {
         std::cerr << "Could not load calibration file from Stereolabs servers" << std::endl;
         return EXIT_FAILURE;
     }
     std::cout << "Calibration file found. Loading..." << std::endl;
+    // <---- Retrieve calibration file from Stereolabs server
 
     // ----> Frame size
     int w,h;
@@ -89,14 +89,14 @@ int main(int argc, char *argv[])
     int h_out = h / DOWNSCALE_FACTOR;
 
     std::cout << "Frame size: " << w_out << ' ' << h_out << std::endl;
-
     // <---- Frame size
 
     // ----> Initialize calibration
+    double baseline = 0;
     cv::Mat map_left_x, map_left_y;
     cv::Mat map_right_x, map_right_y;
     cv::Mat cameraMatrix_left, cameraMatrix_right;
-    double baseline=0;
+    
     sl_oc::tools::initCalibration(calibration_file, cv::Size(w/2,h), map_left_x, map_left_y, map_right_x, map_right_y,
                                   cameraMatrix_left, cameraMatrix_right, &baseline);
 
@@ -105,14 +105,16 @@ int main(int argc, char *argv[])
     double cx = cameraMatrix_left.at<double>(0,2);
     double cy = cameraMatrix_left.at<double>(1,2);
 
+    double disparity_number = fx * baseline;
+
     std::cout << " Camera Matrix L: \n" << cameraMatrix_left << std::endl << std::endl;
     std::cout << " Camera Matrix R: \n" << cameraMatrix_right << std::endl << std::endl;
 
 #ifdef USE_OCV_TAPI
-    cv::UMat map_left_x_gpu = map_left_x.getUMat(cv::ACCESS_READ,cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_left_y_gpu = map_left_y.getUMat(cv::ACCESS_READ,cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_right_x_gpu = map_right_x.getUMat(cv::ACCESS_READ,cv::USAGE_ALLOCATE_DEVICE_MEMORY);
-    cv::UMat map_right_y_gpu = map_right_y.getUMat(cv::ACCESS_READ,cv::USAGE_ALLOCATE_DEVICE_MEMORY);
+    cv::UMat map_left_x_gpu = map_left_x.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
+    cv::UMat map_left_y_gpu = map_left_y.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
+    cv::UMat map_right_x_gpu = map_right_x.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
+    cv::UMat map_right_y_gpu = map_right_y.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_DEVICE_MEMORY);
 #endif
     // ----> Initialize calibration
 
@@ -120,22 +122,36 @@ int main(int argc, char *argv[])
 #ifdef USE_OCV_TAPI
     cv::UMat frameYUV;  // Full frame side-by-side in YUV 4:2:2 format
     cv::UMat frameBGR(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Full frame side-by-side in BGR format
+
     cv::UMat left_raw(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Left unrectified image
     cv::UMat right_raw(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Right unrectified image
+
     cv::UMat left_rect(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Left rectified image
     cv::UMat right_rect(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Right rectified image
+
     cv::UMat left_for_matcher(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Left image for the stereo matcher
     cv::UMat right_for_matcher(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Right image for the stereo matcher
-    cv::UMat left_disp_half(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Half sized disparity map
-    cv::UMat left_disp(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Full output disparity
-    cv::UMat left_disp_float(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Final disparity map in float32
-    cv::UMat left_depth_map(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Depth map in float32
-    cv::UMat left_depth_image(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Normalized and color remapped depth map to be saved
+
+    cv::UMat disparity_half(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Half sized disparity map
+    cv::UMat disparity(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Full output disparity
+    cv::UMat disparity_float(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Final disparity map in float32
+
+    cv::UMat depth_map(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Depth map in float32
+    cv::UMat depth_image(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Normalized and color remapped depth map to be saved
+
     cv::UMat left_grey(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Grey version of the left raw image
     cv::UMat right_grey(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Grey version of the right raw image
-    cv::UMat waouh(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Current frame (left raw camera + depth map)
+
+    cv::UMat temporary(cv::USAGE_ALLOCATE_DEVICE_MEMORY);  // intermediate image
+    cv::UMat visualization(cv::USAGE_ALLOCATE_DEVICE_MEMORY); // Output visualization (left raw camera + depth map)
 #else
-    cv::Mat frameBGR, left_raw, left_rect, right_raw, right_rect, frameYUV, left_for_matcher, right_for_matcher, left_disp_half,left_disp,left_disp_float, left_depth_image, current_frame;
+    cv::Mat frameYUV, frameBGR;
+    cv::Mat left_raw, right_raw, left_rect, right_rect;
+    cv::Mat left_for_matcher, right_for_matcher;
+    cv::Mat disparity_half, disparity, disparity_float;
+    cv::Mat depth_map, depth_image;
+    cv::Mat left_grey, right_grey;
+    cv::Mat temporary, visualization;
 #endif
     // <---- Declare OpenCV images
 
@@ -144,38 +160,37 @@ int main(int argc, char *argv[])
 
     //Note: you can use the tool 'zed_open_capture_depth_tune_stereo' to tune the parameters and save them to YAML
     if(!stereoPar.load())
-    {
         stereoPar.save(); // Save default parameters.
-    }
 
-    cv::Ptr<cv::StereoSGBM> left_matcher = cv::StereoSGBM::create(stereoPar.minDisparity,stereoPar.numDisparities,stereoPar.blockSize);
-    left_matcher->setMinDisparity(stereoPar.minDisparity);
-    left_matcher->setNumDisparities(stereoPar.numDisparities);
-    left_matcher->setBlockSize(stereoPar.blockSize);
-    left_matcher->setP1(stereoPar.P1);
-    left_matcher->setP2(stereoPar.P2);
-    left_matcher->setDisp12MaxDiff(stereoPar.disp12MaxDiff);
-    left_matcher->setMode(stereoPar.mode);
-    left_matcher->setPreFilterCap(stereoPar.preFilterCap);
-    left_matcher->setUniquenessRatio(stereoPar.uniquenessRatio);
-    left_matcher->setSpeckleWindowSize(stereoPar.speckleWindowSize);
-    left_matcher->setSpeckleRange(stereoPar.speckleRange);
+    cv::Ptr<cv::StereoSGBM> stereo_matcher = cv::StereoSGBM::create(stereoPar.minDisparity, stereoPar.numDisparities, stereoPar.blockSize);
+    stereo_matcher->setMinDisparity(stereoPar.minDisparity);
+    stereo_matcher->setNumDisparities(stereoPar.numDisparities);
+    stereo_matcher->setBlockSize(stereoPar.blockSize);
+    stereo_matcher->setP1(stereoPar.P1);
+    stereo_matcher->setP2(stereoPar.P2);
+    stereo_matcher->setDisp12MaxDiff(stereoPar.disp12MaxDiff);
+    stereo_matcher->setMode(stereoPar.mode);
+    stereo_matcher->setPreFilterCap(stereoPar.preFilterCap);
+    stereo_matcher->setUniquenessRatio(stereoPar.uniquenessRatio);
+    stereo_matcher->setSpeckleWindowSize(stereoPar.speckleWindowSize);
+    stereo_matcher->setSpeckleRange(stereoPar.speckleRange);
 
     stereoPar.print();
     // <---- Stereo matcher initialization
 
-    uint64_t last_ts=0; // Used to check new frame arrival
+    uint64_t last_ts=0;  // Used to check new frame arrival
 
     // ----> Video Writer definition
     // Define the output video file name and codec
     std::string outputFilename = recording_name + ".avi";
     int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');  // Codec for gray AVI format
 
-    // Create a VideoWriter object to write the video to a file
+    // Create a VideoWriter object to write the video to a file : left_grey | distance | right_grey
     cv::VideoWriter videoWriter(outputFilename, fourcc, (double) params.fps, cv::Size(w_out*3, h_out), false);
 
     // Check if the VideoWriter was successfully opened
-    if (!videoWriter.isOpened()) {
+    if (!videoWriter.isOpened())
+    {
         std::cerr << "Could not open the output video file for writing" << std::endl;
         return EXIT_FAILURE;
     }
@@ -190,18 +205,18 @@ int main(int argc, char *argv[])
         const sl_oc::video::Frame frame = cap.getLastFrame();
 
         // ----> If the frame is valid we can convert, rectify and display it
-        if(frame.data!=nullptr && frame.timestamp!=last_ts)
+        if(frame.data != nullptr && frame.timestamp != last_ts)
         {
             last_ts = frame.timestamp;
 
             // ----> Conversion from YUV 4:2:2 to BGR for visualization
 #ifdef USE_OCV_TAPI
-            cv::Mat frameYUV_cpu = cv::Mat( frame.height, frame.width, CV_8UC2, frame.data );
-            frameYUV = frameYUV_cpu.getUMat(cv::ACCESS_READ,cv::USAGE_ALLOCATE_HOST_MEMORY);
+            cv::Mat frameYUV_cpu = cv::Mat(frame.height, frame.width, CV_8UC2, frame.data);
+            frameYUV = frameYUV_cpu.getUMat(cv::ACCESS_READ, cv::USAGE_ALLOCATE_HOST_MEMORY);
 #else
-            frameYUV = cv::Mat( frame.height, frame.width, CV_8UC2, frame.data );
+            frameYUV = cv::Mat(frame.height, frame.width, CV_8UC2, frame.data);
 #endif
-            cv::cvtColor(frameYUV,frameBGR,cv::COLOR_YUV2BGR_YUYV);
+            cv::cvtColor(frameYUV, frameBGR, cv::COLOR_YUV2BGR_YUYV);
             // <---- Conversion from YUV 4:2:2 to BGR for visualization
 
             // ----> Extract left and right images from side-by-side
@@ -231,10 +246,10 @@ int main(int argc, char *argv[])
             cv::resize(right_rect, right_for_matcher, cv::Size(w_out, h_out), 1./DOWNSCALE_FACTOR, 1./DOWNSCALE_FACTOR, cv::INTER_AREA);
 
             // Apply stereo matching
-            left_matcher->compute(left_for_matcher, right_for_matcher, left_disp_half);
-            left_disp_half.convertTo(left_disp_float,CV_32FC1);
+            stereo_matcher->compute(left_for_matcher, right_for_matcher, disparity_half);
+            disparity_half.convertTo(disparity_float, CV_32FC1);
 
-            cv::multiply(left_disp_float,1./16.,left_disp_float); // Last 4 bits of SGBM disparity are decimal
+            cv::multiply(disparity_float, 1./16., disparity_float); // Last 4 bits of SGBM disparity are decimal
             
             double elapsed = stereo_clock.toc();
             std::stringstream stereoElabInfo;
@@ -246,30 +261,31 @@ int main(int argc, char *argv[])
             // depth = (f * B) / disparity
             // where 'f' is the camera focal, 'B' is the camera baseline, 'disparity' is the pixel disparity
 
-            double num = static_cast<double>(fx*baseline);
-            cv::divide(num,left_disp_float,left_depth_map);
-            cv:min(left_depth_map,static_cast<double>(stereoPar.maxDepth_mm),left_depth_map);
+            cv::divide(disparity_number, disparity_float, depth_map);
+            cv:min(depth_map, static_cast<double>(stereoPar.maxDepth_mm), depth_map);
 
-            cv::add(left_depth_map,-static_cast<double>(stereoPar.minDepth_mm),left_depth_map); // Minimum depth offset correction
-            cv::multiply(left_depth_map,1./(stereoPar.maxDepth_mm-stereoPar.minDepth_mm),left_depth_image,255., CV_8UC1 ); // Normalization and rescaling
+            // Map depth_map to a 0-255 grayscale image 
+            cv::add(depth_map, -static_cast<double>(stereoPar.minDepth_mm), depth_map);  // Minimum depth offset correction
+            cv::multiply(depth_map, 1./(stereoPar.maxDepth_mm-stereoPar.minDepth_mm), depth_image, 255., CV_8UC1);  // Normalization and rescaling
 
+            // Convert left & right image to grayscale for visualization
             cv::cvtColor(left_for_matcher, left_grey, cv::COLOR_BGR2GRAY);
             cv::cvtColor(right_for_matcher, right_grey, cv::COLOR_BGR2GRAY);
 
-            cv::hconcat(left_grey, left_depth_image, waouh);
-            cv::hconcat(waouh, right_grey, left_depth_image);
+            // Create a 3 columns image visualization
+            cv::hconcat(left_grey, depth_image, temporary);
+            cv::hconcat(temporary, right_grey, visualization);
 
-            videoWriter.write(left_depth_image);
-
+            videoWriter.write(visualization);
             // <---- Extract Depth map
         }
 
         auto endTime = std::chrono::high_resolution_clock::now();
         auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
 
-        if (elapsedTime < dt) {
+        if (elapsedTime < dt)
             std::this_thread::sleep_for(dt - elapsedTime);
-        } else
+        else
             std::cout << "Out of time..." << std::endl;
 
     }
