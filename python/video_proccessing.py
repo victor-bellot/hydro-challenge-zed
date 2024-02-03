@@ -1,8 +1,18 @@
+"""
+TODO:
+- gabor filter for texture detection
+- multi-object tracking ???
+- stereo camera calibration & depth map
+- ROS node creation
+- computers communication
+"""
+
 import time
 from tools import *
+from matplotlib import pyplot as plt
 
 
-def main(video_name, start_time=0, is_stereo=True):
+def main(video_name, start_time=0, is_stereo=False):
     if is_stereo:
         n_column = 2
         video_path = 'stereo_video/' + video_name
@@ -19,8 +29,8 @@ def main(video_name, start_time=0, is_stereo=True):
         exit()
 
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) / n_column)
+    source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) / n_column)
 
     # Define colors in BGR
     color_of = (255, 0, 0)  # BLUE
@@ -28,17 +38,21 @@ def main(video_name, start_time=0, is_stereo=True):
     color_horizon = (0, 255, 0)  # GREEN
     color_box = (255, 0, 255)  # PURPLE
 
-    horizontal_ceil = 16  # what's considered as horizontal
+    # Define the downscale factor
+    downscale_factor = 2
 
-    # Used to draw the horizontal line : (2, 1, 1)
-    border_x = np.array([[[0.]], [[width - 1.]]])
-    border_y = np.full((2, 1, 1), height / 2)
+    # Calculate the new size based on the scale factor
+    width = int(source_width / downscale_factor)
+    height = int(source_height / downscale_factor)
 
-    # Blur each frame before processing them
-    window_gaussian = (7, 7)
+    horizon_estimator = HorizonEstimator()
+    saliency_estimator = SaliencyEstimator()
+    tracking_window = TrackingWindow(height, width)
 
-    # Dilatation is applied on active pixel -> used for computing the saliency mask
-    dilatation_kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(3, 3))
+    # Erosion & dilatation are applied on active pixel -> used for computing the saliency mask
+    connection_kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(3, 3))
+    erosion_kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(5, 5))
+    dilatation_kernel = cv2.getStructuringElement(shape=cv2.MORPH_ELLIPSE, ksize=(5, 5))
 
     # Parameters for corner detection
     features_params = {
@@ -54,14 +68,10 @@ def main(video_name, start_time=0, is_stereo=True):
         'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
     }
 
-    # Tracking window
-    wx = width / 2.
-    wy = height / 2.
-    ws = min(wx, wy)
-
     # Set duration (in seconds)
+    frame_skip = 4
     duration = 40
-    dt = 1. / fps
+    dt = frame_skip / fps
 
     # Calculate the corresponding frame numbers
     n_frame = duration * fps
@@ -73,42 +83,42 @@ def main(video_name, start_time=0, is_stereo=True):
     # Define variables to initialize later
     old_frame = None
     points_old_frame = []
-    horizontal_mask = np.ones(shape=(height - int(height / 3), width), dtype=np.uint8)
 
     # Read and display frames within the specified time range
-    for _ in range(n_frame):
+    for k_frame in range(n_frame):
+        if k_frame % frame_skip == 0:
+            pass
+
         t_loop = time.time()
 
         # Read a frame from the video
-        ret, frame_bgr = cap.read()
+        ret, read_frame = cap.read()
 
         # Check if the video has ended
         if not ret:
             break
 
-        # Only consider the left camera flow and the lower part
-        frame_bgr = frame_bgr[int(height / 3):, :width]
+        # Only consider the left camera flow
+        source_frame = read_frame[:, :source_width]
+
+        # Downscale and convert to grayscale
+        frame_bgr = cv2.resize(source_frame, (width, height))
         frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # Apply a blur filter
-        frame = cv2.GaussianBlur(frame, window_gaussian, 0)
-
-        # Where to look
-        saliency_mask = compute_saliency_mask(frame_bgr)
-        saliency_mask = cv2.dilate(saliency_mask, dilatation_kernel)
+        # Draw points and line on a separate image
+        canvas = source_frame.copy()
 
         # Estimate a line for the horizon
-        hpx, hpy, ransac_border_y = estimate_horizon(frame)
+        hpx, hpy, border_y, horizontal_mask = horizon_estimator.compute(frame)
 
-        # Filter out non horizontal lines
-        y_0, y_w = ransac_border_y.flatten()
-        if abs(y_w - y_0) < horizontal_ceil:
-            border_y = ransac_border_y.reshape(-1, 1, 1)
-            horizontal_mask = np.zeros_like(frame, dtype=np.uint8)
-            horizontal_mask[int(max(y_0, y_w)):] = 1
+        # Scatter gradient points on the image
+        for (x, y) in zip(hpx, hpy):
+            cv2.circle(canvas, (int(downscale_factor * x), int(downscale_factor * y)), 3, color_grad, -1)
 
-        # Draw points and line on a separate image
-        canvas = frame_bgr.copy()
+        # Draw the horizontal line on the image
+        border_x = np.array([[[0.]], [[width - 1.]]])
+        ransac_points = np.concatenate((border_x, border_y), axis=2).astype(np.int32)
+        cv2.polylines(canvas, [ransac_points * downscale_factor], isClosed=False, color=color_horizon, thickness=2)
 
         if (old_frame is not None) and (points_old_frame is not None):
             points_new_frame, status, err = cv2.calcOpticalFlowPyrLK(old_frame, frame,
@@ -116,39 +126,36 @@ def main(video_name, start_time=0, is_stereo=True):
                                                                      None, **lk_params)
 
             for p0, p1 in zip(points_old_frame[status == 1], points_new_frame[status == 1]):
-                x0, y0 = p0.ravel()
-                x1, y1 = p1.ravel()
+                x0, y0 = (downscale_factor * p0).ravel()
+                x1, y1 = (downscale_factor * p1).ravel()
                 cv2.line(canvas, (int(x1), int(y1)), (int(x0), int(y0)), color_of, 3)
 
         # Current frame becomes the old one
         old_frame = frame.copy()
 
+        # Compute the saliency map (where to look)
+        saliency_mask = saliency_estimator.compute(frame_bgr, horizontal_mask)
+
         # Compute good feature point to keep track of
-        mask = saliency_mask & horizontal_mask
+        mask = horizontal_mask & saliency_mask
+
+        mask = cv2.dilate(mask, connection_kernel)
+        mask = cv2.erode(mask, erosion_kernel)
+        mask = cv2.dilate(mask, dilatation_kernel)
+
         points_old_frame = cv2.goodFeaturesToTrack(frame, mask=mask, **features_params)
 
-        # Update tracking window
-        wx, wy, ws = update_tracking_window(wx, wy, ws, points_old_frame)
-        cv2.rectangle(canvas, (int(wx-ws), int(wy-ws)), (int(wx+ws), int(wy+ws)), color_box, thickness=2)
-
-        # Scatter gradient points on the image
-        for (x, y) in zip(hpx, hpy):
-            cv2.circle(canvas, (int(x), int(y)), 3, color_grad, -1)
-
-        # Draw the horizontal line on the image
-        ransac_points = np.concatenate((border_x, border_y), axis=2).astype(np.int32)
-        cv2.polylines(canvas, [ransac_points], isClosed=False, color=color_horizon, thickness=2)
+        wx, wy, wsx, wsy = tracking_window.update(points_old_frame, downscale_factor)
+        cv2.rectangle(canvas, (int(wx-wsx), int(wy-wsy)), (int(wx+wsx), int(wy+wsy)), color_box, thickness=2)
 
         debug = cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2BGR)
+        debug = cv2.resize(debug, (source_width, source_height))
 
         # Stack images vertically or horizontally
-        if height < width:
-            layout = np.vstack((canvas, debug))
-        else:
-            layout = np.hstack((canvas, debug))
+        layout = np.vstack((canvas, debug)) if height < width else np.hstack((canvas, debug))
 
-        # Show layout
-        cv2.imshow('Canvas & Debug', layout)
+        # Show lower part of layout
+        cv2.imshow('Canvas & Debug', layout)  # [int(source_height / 3):])
 
         # Pause the loop if SPACE is pressed
         paused = False
@@ -159,6 +166,7 @@ def main(video_name, start_time=0, is_stereo=True):
 
         t_remaining = EPSILON if paused else dt - (time.time() - t_loop)
         if t_remaining > 0:
+            print("Time left:", t_remaining, 'seconds.')
             plt.pause(t_remaining)
         else:
             print("Out of time of", -t_remaining, 'seconds.')
@@ -170,5 +178,9 @@ def main(video_name, start_time=0, is_stereo=True):
 
 
 if __name__ == "__main__":
-    # main('duck_close.avi')
-    main('goodbye.mp4', start_time=10, is_stereo=False)
+    # main('duck_close.avi', is_stereo=True)
+    main('goodbye.mp4', start_time=10)
+    # main('skyfall.mp4', start_time=10)  # oblique horizon
+    # main('sunny.mp4', start_time=20)  # too many things over the horizon
+    # main('forest.mp4', start_time=10)  # saliency issue -> sun reflection
+    # main('double.mp4', start_time=10)  # won't happen -> too far from water surface
