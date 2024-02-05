@@ -60,4 +60,3 @@ Include the `videocapture.hpp` header, declare a `VideoCapture` object and retri
     sl_oc::video::VideoCapture cap;
     cap.initializeVideo();
     const sl_oc::video::Frame frame = cap.getLastFrame();
-

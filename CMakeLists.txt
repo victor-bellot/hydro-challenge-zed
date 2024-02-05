@@ -263,7 +263,7 @@ if(BUILD_EXAMPLES)
         ##### Recorder Example
         find_package(OpenMP)
 
-        set(RECORDER_EXAMPLE ${PROJECT_NAME}_recorder_example)
+        set(RECORDER_EXAMPLE ${PROJECT_NAME}_video_recorder)
         include_directories( ${PROJECT_SOURCE_DIR}/examples/include)
         add_executable(${RECORDER_EXAMPLE} "${PROJECT_SOURCE_DIR}/custom/video_recorder.cpp")
         set_target_properties(${RECORDER_EXAMPLE} PROPERTIES PREFIX "")

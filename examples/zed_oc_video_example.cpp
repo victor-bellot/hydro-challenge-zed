@@ -56,7 +56,6 @@ int main(int argc, char *argv[])
     // <---- Create Video Capture
 
 
-
 #ifdef TEST_FPS
     // Timestamp to check FPS
     double lastTime = static_cast<double>(getSteadyTimestamp())/1e9;
@@ -111,5 +110,3 @@ int main(int argc, char *argv[])
 
     return EXIT_SUCCESS;
 }
-
-
