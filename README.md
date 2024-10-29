@@ -1,5 +1,9 @@
 # hydro-challenge-zed
 
+Part of the HydroChallenge project.
+
+![les-bgs](ressources/hydrochal-cover.JPG)
+
 ## From https://github.com/stereolabs/zed-open-capture.git
 
 ## TODO
